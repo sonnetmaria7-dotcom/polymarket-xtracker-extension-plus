@@ -3,6 +3,8 @@ const TRACKING_API = (id) => `https://xtracker.polymarket.com/api/trackings/${id
 const SUMMARY_ID = 'xtracker-overlay-summary';
 const BADGE_CLASS = 'xtracker-overlay-badge';
 const PANEL_ID = 'xtracker-overlay-panel';
+const CLOSE_CLASS = 'xtracker-overlay-close';
+const STORAGE_KEY = 'xtracker-overlay-dismissed';
 
 let cachedUsers = null;
 let cachedTracking = null;
@@ -51,22 +53,49 @@ function formatDurationHours(hours) {
 function parseRange(label) {
   const text = (label || '').trim();
   let match = text.match(/^(\d+)\s*-\s*(\d+)$/);
-  if (match) {
-    return { lower: Number(match[1]), upper: Number(match[2]), label: text };
-  }
+  if (match) return { lower: Number(match[1]), upper: Number(match[2]), label: text };
   match = text.match(/^(\d+)\s*\+$/);
-  if (match) {
-    return { lower: Number(match[1]), upper: Infinity, label: text };
-  }
+  if (match) return { lower: Number(match[1]), upper: Infinity, label: text };
   match = text.match(/^under\s*(\d+)$/i);
-  if (match) {
-    return { lower: 0, upper: Number(match[1]) - 1, label: text };
-  }
+  if (match) return { lower: 0, upper: Number(match[1]) - 1, label: text };
   match = text.match(/^(\d+)\s*or more$/i);
-  if (match) {
-    return { lower: Number(match[1]), upper: Infinity, label: text };
-  }
+  if (match) return { lower: Number(match[1]), upper: Infinity, label: text };
   return null;
+}
+
+function getDismissedKey() {
+  return `${STORAGE_KEY}:${location.pathname}`;
+}
+
+function isDismissed() {
+  try {
+    return localStorage.getItem(getDismissedKey()) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setDismissed(value) {
+  try {
+    if (value) localStorage.setItem(getDismissedKey(), '1');
+    else localStorage.removeItem(getDismissedKey());
+  } catch {}
+}
+
+function closeOverlay() {
+  document.getElementById(SUMMARY_ID)?.remove();
+  document.getElementById(PANEL_ID)?.remove();
+  setDismissed(true);
+}
+
+function makeCloseButton(title = '关闭这个市场上的插件面板') {
+  const button = document.createElement('button');
+  button.className = CLOSE_CLASS;
+  button.type = 'button';
+  button.title = title;
+  button.textContent = '×';
+  button.addEventListener('click', closeOverlay);
+  return button;
 }
 
 function findTitleElement() {
@@ -154,9 +183,7 @@ function inferObservedVelocity(tracking) {
   const end = new Date(tracking?.endDate).getTime();
   const now = Date.now();
 
-  if (!Number.isFinite(total) || Number.isNaN(start) || Number.isNaN(end)) {
-    return null;
-  }
+  if (!Number.isFinite(total) || Number.isNaN(start) || Number.isNaN(end)) return null;
 
   const elapsedHours = Math.max((Math.min(now, end) - start) / 3600000, 0);
   if (elapsedHours <= 0) return null;
@@ -171,25 +198,20 @@ function inferObservedVelocity(tracking) {
 
 function explainRange(range, total, remainingHours, observed) {
   if (remainingHours <= 0) {
-    if (total >= range.lower && total <= range.upper) {
-      return { cls: 'hit', text: '已收盘，最终落在该区间' };
-    }
+    if (total >= range.lower && total <= range.upper) return { cls: 'hit', text: '已收盘，最终落在该区间' };
     return { cls: 'dead', text: '已收盘，最终不在该区间' };
   }
 
-  if (total > range.upper) {
+  if (Number.isFinite(range.upper) && total > range.upper) {
     return { cls: 'dead', text: `已超过上限 ${range.upper}` };
   }
 
   const rates = estimateRates(total, remainingHours, range);
   if (!rates) return { cls: 'low', text: '无法计算' };
 
-  if (total >= range.lower && total <= range.upper) {
+  if (total >= range.lower && (range.upper === Infinity || total <= range.upper)) {
     if (range.upper === Infinity) return { cls: 'hit', text: '当前就在该区间' };
-    return {
-      cls: 'hit',
-      text: `保区间：≤ ${formatNum(rates.perHourMax, 2)} 条/小时`
-    };
+    return { cls: 'hit', text: `保区间：≤ ${formatNum(rates.perHourMax, 2)} 条/小时` };
   }
 
   if (range.upper === Infinity) {
@@ -210,15 +232,8 @@ function explainRange(range, total, remainingHours, observed) {
 function isTradingPanel(card) {
   if (!card) return false;
   const text = (card.textContent || '').replace(/\s+/g, ' ').trim();
-  return [
-    'Limit Price',
-    'Shares',
-    'Set Expiration',
-    'Balance $',
-    'Buy Sell',
-    'To win',
-    'Total'
-  ].some((part) => text.includes(part));
+  return ['Limit Price', 'Shares', 'Set Expiration', 'Balance $', 'Buy Sell', 'To win', 'Total']
+    .some((part) => text.includes(part));
 }
 
 function findOutcomeNodes() {
@@ -241,9 +256,7 @@ function findOutcomeNodes() {
       }
     }
 
-    if (!card) continue;
-    if (isTradingPanel(card)) continue;
-    if (seen.has(card)) continue;
+    if (!card || isTradingPanel(card) || seen.has(card)) continue;
     seen.add(card);
     hits.push({ labelNode: node, card, text });
   }
@@ -251,11 +264,9 @@ function findOutcomeNodes() {
 }
 
 function buildSummary(tracking, observed) {
-  const existing = document.getElementById(SUMMARY_ID);
-  existing?.remove();
+  document.getElementById(SUMMARY_ID)?.remove();
 
-  const target = findTitleElement()?.closest('div');
-  if (!target || !tracking?.stats) return;
+  if (!tracking?.stats) return;
 
   const total = Number(tracking.stats.total ?? tracking.stats.cumulative ?? 0);
   const remainingDays = getRemainingDays(tracking.endDate);
@@ -269,16 +280,13 @@ function buildSummary(tracking, observed) {
     <div class="xtracker-row">剩余：<strong>${formatNum(remainingDays, 2)}</strong> 天 / <strong>${formatNum(remainingHours, 1)}</strong> 小时</div>
     <div class="xtracker-row">观测均速：<strong>${formatNum(observed?.perHour, 2)}</strong> 条/小时 ｜ <strong>${formatNum(observed?.perDay, 1)}</strong> 条/天</div>
   `;
-
-  target.parentElement?.insertBefore(wrapper, target.nextSibling);
+  wrapper.appendChild(makeCloseButton());
+  document.body.appendChild(wrapper);
 }
 
 function buildInspectorPanel(tracking, observed, outcomes) {
-  const existing = document.getElementById(PANEL_ID);
-  existing?.remove();
-
-  const target = document.getElementById(SUMMARY_ID);
-  if (!target || !tracking?.stats) return;
+  document.getElementById(PANEL_ID)?.remove();
+  if (!tracking?.stats) return;
 
   const total = Number(tracking.stats.total ?? tracking.stats.cumulative ?? 0);
   const remainingHours = getRemainingHours(tracking.endDate);
@@ -317,8 +325,7 @@ function buildInspectorPanel(tracking, observed, outcomes) {
     </div>
     <div class="xtracker-panel-list">${rows || '<div class="xtracker-panel-empty">没抓到可识别的区间 outcome。</div>'}</div>
   `;
-
-  target.insertAdjacentElement('afterend', panel);
+  document.body.appendChild(panel);
 }
 
 function clearBadges() {
@@ -336,7 +343,6 @@ function renderBadges(tracking, observed) {
   for (const { labelNode, text } of outcomes) {
     const range = parseRange(text);
     if (!range) continue;
-
     const desc = explainRange(range, total, remainingHours, observed);
     const badge = document.createElement('span');
     badge.className = `${BADGE_CLASS} ${BADGE_CLASS}--${desc.cls}`;
@@ -350,21 +356,20 @@ function renderBadges(tracking, observed) {
 function showNotSupported(message) {
   clearBadges();
   document.getElementById(PANEL_ID)?.remove();
-  const existing = document.getElementById(SUMMARY_ID);
-  existing?.remove();
-  const target = findTitleElement()?.closest('div');
-  if (!target) return;
+  document.getElementById(SUMMARY_ID)?.remove();
+
   const wrapper = document.createElement('div');
   wrapper.id = SUMMARY_ID;
-  wrapper.className = 'xtracker-overlay-summary';
+  wrapper.className = 'xtracker-overlay-summary xtracker-overlay-summary--error';
   wrapper.textContent = message;
-  target.parentElement?.insertBefore(wrapper, target.nextSibling);
+  wrapper.appendChild(makeCloseButton());
+  document.body.appendChild(wrapper);
 }
 
 async function render() {
   const title = getCurrentTitle();
   const key = `${location.pathname}::${title}`;
-  if (!title || key === lastRenderKey) return;
+  if (!title || key === lastRenderKey || isDismissed()) return;
 
   try {
     const tracking = await findTrackingForCurrentMarket();
@@ -374,6 +379,7 @@ async function render() {
       return;
     }
 
+    setDismissed(false);
     const observed = inferObservedVelocity(tracking);
     buildSummary(tracking, observed);
     const outcomes = renderBadges(tracking, observed);
@@ -397,6 +403,7 @@ const observer = new MutationObserver(() => {
 observer.observe(document.documentElement, { childList: true, subtree: true });
 window.addEventListener('popstate', () => {
   lastRenderKey = null;
+  setDismissed(false);
   setTimeout(render, 300);
 });
 window.addEventListener('load', () => {
