@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Polymarket XTracker Pace Overlay Plus",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "在 Polymarket 推文计数市场页面按区间直接标注当前推文数、所需时速/日均与预计触达时间。",
   "permissions": [],
   "host_permissions": [

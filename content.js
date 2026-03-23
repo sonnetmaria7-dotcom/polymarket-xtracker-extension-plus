@@ -139,6 +139,37 @@ function estimateRates(total, remainingHours, range) {
   };
 }
 
+/**
+ * Compute sliding-window velocity from stats.daily (hourly buckets from API).
+ * Each bucket is treated as [date, date + 1h) with an hourly count.
+ * We weight partially overlapped buckets proportionally, so the result is a
+ * true rolling-window average instead of a rough whole-hour approximation.
+ */
+function windowVelocityFromDaily(daily, windowHours, now) {
+  if (!Array.isArray(daily) || daily.length === 0) return null;
+
+  const windowMs = windowHours * 3600000;
+  const startMs = now - windowMs;
+  let weightedCount = 0;
+  let coveredMs = 0;
+
+  for (const bucket of daily) {
+    const bucketStart = new Date(bucket.date).getTime();
+    if (Number.isNaN(bucketStart)) continue;
+    const bucketEnd = bucketStart + 3600000;
+    const overlapMs = Math.max(0, Math.min(bucketEnd, now) - Math.max(bucketStart, startMs));
+    if (overlapMs <= 0) continue;
+
+    const count = Number(bucket.count) || 0;
+    const weight = overlapMs / 3600000;
+    weightedCount += count * weight;
+    coveredMs += overlapMs;
+  }
+
+  if (coveredMs <= 0) return null;
+  return weightedCount / (coveredMs / 3600000);
+}
+
 function inferObservedVelocity(tracking) {
   const total = Number(tracking?.stats?.total ?? tracking?.stats?.cumulative ?? 0);
   const start = new Date(tracking?.startDate).getTime();
@@ -151,10 +182,15 @@ function inferObservedVelocity(tracking) {
   if (elapsedHours <= 0) return null;
 
   const perHour = total / elapsedHours;
+  const daily = tracking?.stats?.daily || [];
+
   return {
     elapsedHours,
     perHour,
     perDay: perHour * 24,
+    w4h:  windowVelocityFromDaily(daily, 4,  now),
+    w12h: windowVelocityFromDaily(daily, 12, now),
+    w24h: windowVelocityFromDaily(daily, 24, now),
   };
 }
 
@@ -209,7 +245,8 @@ function buildSummary(tracking, observed) {
     <div class="xtracker-row"><strong>XTracker</strong>：@${tracking.user?.handle || 'unknown'} ｜ 当前已发 <strong>${total}</strong> 条</div>
     <div class="xtracker-row">时间：${formatDate(tracking.startDate)} → ${formatDate(tracking.endDate)}</div>
     <div class="xtracker-row">剩余：<strong>${formatNum(remainingDays, 2)}</strong> 天 / <strong>${formatNum(remainingHours, 1)}</strong> 小时</div>
-    <div class="xtracker-row">观测均速：<strong>${formatNum(observed?.perHour, 2)}</strong> 条/小时 ｜ <strong>${formatNum(observed?.perDay, 1)}</strong> 条/天</div>
+    <div class="xtracker-row">全程均速：<strong>${formatNum(observed?.perHour, 2)}</strong> /h ｜ <strong>${formatNum(observed?.perDay, 1)}</strong> /天</div>
+    <div class="xtracker-row">滚动均速：4h <strong>${observed?.w4h != null ? formatNum(observed.w4h, 2) : '—'}</strong> ｜ 12h <strong>${observed?.w12h != null ? formatNum(observed.w12h, 2) : '—'}</strong> ｜ 24h <strong>${observed?.w24h != null ? formatNum(observed.w24h, 2) : '—'}</strong> 条/小时</div>
   `;
 
   target.parentElement?.insertBefore(wrapper, target.nextSibling);
@@ -217,6 +254,14 @@ function buildSummary(tracking, observed) {
 
 function clearBadges() {
   document.querySelectorAll(`.${BADGE_CLASS}`).forEach((node) => node.remove());
+}
+
+function bestVelocity(observed) {
+  // prefer the shortest reliable window; fall back to full-history
+  if (observed?.w4h != null && observed.w4h >= 0) return observed.w4h;
+  if (observed?.w12h != null && observed.w12h >= 0) return observed.w12h;
+  if (observed?.w24h != null && observed.w24h >= 0) return observed.w24h;
+  return observed?.perHour ?? null;
 }
 
 function buildBadgeText(range, total, remainingHours, observed) {
@@ -239,24 +284,26 @@ function buildBadgeText(range, total, remainingHours, observed) {
       return { cls: 'hit', text: '当前就在该区间' };
     }
 
-    const upperEta = observed?.perHour > 0 ? (range.upper - total) / observed.perHour : Infinity;
+    const vel = bestVelocity(observed);
+    const upperEta = vel > 0 ? (range.upper - total) / vel : Infinity;
     return {
       cls: 'hit',
       text: `区间内｜上限速率 ≤ ${formatNum(rates.perHourMax, 2)}/h ｜ 触顶约 ${formatDurationHours(upperEta)}`
     };
   }
 
-  const lowerEta = observed?.perHour > 0 ? (range.lower - total) / observed.perHour : Infinity;
+  const vel = bestVelocity(observed);
+  const lowerEta = vel > 0 ? (range.lower - total) / vel : Infinity;
 
   if (range.upper === Infinity) {
     return {
-      cls: observed && observed.perHour >= rates.perHourMin ? 'watch' : 'low',
+      cls: vel != null && vel >= rates.perHourMin ? 'watch' : 'low',
       text: `至少 ${formatNum(rates.perHourMin, 2)}/h ｜ ${formatNum(rates.perDayMin, 1)}/天 ｜ 触达约 ${formatDurationHours(lowerEta)}`
     };
   }
 
-  const inside = observed && observed.perHour >= rates.perHourMin && observed.perHour <= rates.perHourMax;
-  const nearUpper = observed && observed.perHour > rates.perHourMax;
+  const inside = vel != null && vel >= rates.perHourMin && vel <= rates.perHourMax;
+  const nearUpper = vel != null && vel > rates.perHourMax;
   return {
     cls: inside ? 'watch' : nearUpper ? 'dead' : 'low',
     text: `${formatNum(rates.perHourMin, 2)}~${formatNum(rates.perHourMax, 2)}/h ｜ ${formatNum(rates.perDayMin, 1)}~${formatNum(rates.perDayMax, 1)}/天 ｜ 下限约 ${formatDurationHours(lowerEta)}`
