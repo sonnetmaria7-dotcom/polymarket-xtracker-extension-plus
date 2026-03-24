@@ -304,9 +304,11 @@ function buildBadgeText(range, total, remainingHours, observed) {
 
   const inside = vel != null && vel >= rates.perHourMin && vel <= rates.perHourMax;
   const nearUpper = vel != null && vel > rates.perHourMax;
+  const needToLower = Math.max(range.lower - total, 0);
+  const roomToUpper = Math.max(range.upper - total, 0);
   return {
     cls: inside ? 'watch' : nearUpper ? 'dead' : 'low',
-    text: `${formatNum(rates.perHourMin, 2)}~${formatNum(rates.perHourMax, 2)}/h ｜ ${formatNum(rates.perDayMin, 1)}~${formatNum(rates.perDayMax, 1)}/天 ｜ 下限约 ${formatDurationHours(lowerEta)}`
+    text: `距下限还差 ${formatNum(needToLower, 0)} 条，距上限还有 ${formatNum(roomToUpper, 0)} 条，需 ${formatNum(rates.perHourMin, 2)}~${formatNum(rates.perHourMax, 2)}/小时 ｜ ${formatNum(rates.perHourMin, 2)}~${formatNum(rates.perHourMax, 2)}/h ｜ ${formatNum(rates.perDayMin, 1)}~${formatNum(rates.perDayMax, 1)}/天 ｜ 下限约 ${formatDurationHours(lowerEta)}`
   };
 }
 
